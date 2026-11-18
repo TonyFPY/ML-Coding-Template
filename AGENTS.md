@@ -29,3 +29,12 @@ Paired source: `softmax-cross-entropy.py`.
 - Normalize softmax across classes for each example (`axis=1`). In the basic version, show direct softmax and probability-based categorical cross-entropy. In the stable version, subtract each row's maximum and compute cross-entropy from shifted logits and the target-class logit.
 - Derive and implement the mean-loss gradient $(P-Q)/B$. Explain that `grad[np.arange(B), targets] -= 1` selects each row's target-class entry and subtracts its one-hot target value.
 - Keep examples consistent with the source's batch-major shapes and class-index targets. Do not describe this as multilabel classification or binary cross-entropy.
+
+## `layernorm-batchnorm-rmsnorm.md`
+
+Paired source: `layernorm-batchnorm-rmsnorm.py`.
+
+- Describe input and affine parameter shapes for $(B,D)$ inputs. Make the statistic axes explicit: LayerNorm and RMSNorm normalize each row over features; BatchNorm normalizes each feature across the batch during training.
+- Preserve each method's formula: LayerNorm centers and scales with variance; BatchNorm uses batch statistics in training and running statistics in inference; RMSNorm divides by root mean square without centering and has no learned shift in this implementation.
+- Explain that epsilon is added inside the square root, and that epsilon avoids a zero denominator but does not prevent overflow at extreme magnitudes.
+- Document BatchNorm's running-statistics update and the current `(D,)` to `(1,D)` shape expansion caused by `keepdims=True`; mention that inference broadcasts either shape.
