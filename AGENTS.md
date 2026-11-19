@@ -38,3 +38,11 @@ Paired source: `layernorm-batchnorm-rmsnorm.py`.
 - Preserve each method's formula: LayerNorm centers and scales with variance; BatchNorm uses batch statistics in training and running statistics in inference; RMSNorm divides by root mean square without centering and has no learned shift in this implementation.
 - Explain that epsilon is added inside the square root, and that epsilon avoids a zero denominator but does not prevent overflow at extreme magnitudes.
 - Document BatchNorm's running-statistics update and the current `(D,)` to `(1,D)` shape expansion caused by `keepdims=True`; mention that inference broadcasts either shape.
+
+## `two-layer-mlp.md`
+
+Paired source: `two-layer-mlp.py`; the guide may also include a separately identified MSE regression variant.
+
+- Keep the softmax cross-entropy classifier and the MSE regressor distinct: classification uses integer class IDs and softmax; regression uses continuous targets and a linear output.
+- For the MSE defined as `np.mean((y_pred - y_true) ** 2)`, use output gradient `2 * (y_pred - y_true) / (N * output_dim)`. Note that this is `2 / N` only for a single output.
+- Keep target and prediction shapes aligned, and document the current classifier's forward return, backward gradient order, and SGD argument order.

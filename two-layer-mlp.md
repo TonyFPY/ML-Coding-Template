@@ -202,3 +202,131 @@ loss = ce_loss_with_logits(y, z2)
 ```
 
 The backward gradient remains $dZ_2=(P-Q)/B$. The source example uses $B=2$, $D=2$, $H=3$, and $C=2$, so the logits have shape $(2,2)$ and the gradients have shapes $(2,3)$, $(3,)$, $(3,2)$, and $(2,)$ in the returned order.
+
+---
+
+## MLP-MSE — Two-Layer Regression
+
+This variant uses the same two-layer architecture but predicts continuous values. Its output layer is linear, so it does not apply softmax. It trains with mean squared error (MSE) instead of categorical cross-entropy.
+
+### Forward pass and loss
+
+For $N$ examples and $O$ output values per example:
+
+$$
+Z_1=XW_1+b_1,
+\qquad
+A_1=\operatorname{ReLU}(Z_1),
+\qquad
+\hat{Y}=A_1W_2+b_2
+$$
+
+The code's `np.mean` averages across all $N\times O$ prediction elements:
+
+$$
+L=\frac{1}{NO}\sum_{i=1}^{N}\sum_{j=1}^{O}(\hat{y}_{ij}-y_{ij})^2
+$$
+
+Therefore, the output gradient is:
+
+$$
+dZ_2=\frac{2}{NO}(\hat{Y}-Y)
+$$
+
+For one output per example ($O=1$), this reduces to $2(\hat{Y}-Y)/N$.
+
+### Backpropagation and update
+
+The remaining gradients use the same chain rule as the classifier, starting from the MSE output gradient:
+
+$$
+dW_2=A_1^\top dZ_2,
+\qquad
+db_2=\sum_{i=1}^{N}(dZ_2)_i
+$$
+
+$$
+dA_1=dZ_2W_2^\top,
+\qquad
+dZ_1=dA_1\odot\mathbf{1}[Z_1>0]
+$$
+
+$$
+dW_1=X^\top dZ_1,
+\qquad
+db_1=\sum_{i=1}^{N}(dZ_1)_i
+$$
+
+Each parameter is updated with $\theta\leftarrow\theta-\eta d\theta$.
+
+### Refined NumPy implementation
+
+```python
+import numpy as np
+
+
+class TwoLayerNN:
+    def __init__(self, input_dim, hidden_dim, output_dim, lr=0.01):
+        self.lr = lr
+        self.W1 = np.random.randn(input_dim, hidden_dim) * 0.01
+        self.b1 = np.zeros((1, hidden_dim))
+        self.W2 = np.random.randn(hidden_dim, output_dim) * 0.01
+        self.b2 = np.zeros((1, output_dim))
+
+    def relu(self, x):
+        return np.maximum(0, x)
+
+    def relu_backward(self, dout, x):
+        return dout * (x > 0)
+
+    def forward(self, X):
+        self.X = X
+        self.z1 = X @ self.W1 + self.b1
+        self.a1 = self.relu(self.z1)
+        return self.a1 @ self.W2 + self.b2
+
+    def loss(self, y_pred, y_true):
+        return np.mean((y_pred - y_true) ** 2)
+
+    def backward(self, y_pred, y_true):
+        # Both arrays have shape (N, output_dim); np.mean averages all N*output_dim values.
+        N, output_dim = y_true.shape
+
+        dz2 = (2.0 / (N * output_dim)) * (y_pred - y_true)
+
+        dW2 = self.a1.T @ dz2
+        db2 = np.sum(dz2, axis=0, keepdims=True)
+
+        da1 = dz2 @ self.W2.T
+        dz1 = self.relu_backward(da1, self.z1)
+
+        dW1 = self.X.T @ dz1
+        db1 = np.sum(dz1, axis=0, keepdims=True)
+
+        self.W2 -= self.lr * dW2
+        self.b2 -= self.lr * db2
+        self.W1 -= self.lr * dW1
+        self.b1 -= self.lr * db1
+```
+
+The factor in `dz2` is `2 / (N * output_dim)` because `np.mean` averages over both examples and output values. The pasted `2 / N` expression is correct when `output_dim == 1`, as in the example below.
+
+### Training example
+
+Targets for scalar regression are kept two-dimensional with shape `(N, 1)`, matching the model output:
+
+```python
+np.random.seed(0)
+X = np.random.randn(10, 3)
+y = np.random.randn(10, 1)
+
+model = TwoLayerNN(input_dim=3, hidden_dim=5, output_dim=1, lr=0.01)
+
+for _ in range(1000):
+    y_pred = model.forward(X)
+    model.backward(y_pred, y)
+
+print(model.loss(model.forward(X), y))
+```
+
+This MSE section is for regression with continuous targets. The earlier softmax cross-entropy section is for multiclass classification with integer class IDs.
