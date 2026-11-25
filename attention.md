@@ -1,6 +1,6 @@
 # Scaled Dot-Product and Multi-Head Attention
 
-Attention lets each query combine values from relevant keys. This guide starts with the attention calculation, then shows the numerically stable NumPy implementation and the single-head and multi-head PyTorch layers in `attention.py`.
+Attention lets each query combine values from relevant keys. This guide introduces the calculation, gives basic and numerically stable NumPy versions, then presents a compact PyTorch implementation of single-head and multi-head self-attention.
 
 ## Notation
 
@@ -94,9 +94,9 @@ print(out)
 
 All allowed scores are equal, so each output is the average of the values available up to that position. For a numerical check, scores such as `[1000, 1001]` would overflow under direct exponentiation; shifting them to `[-1, 0]` gives finite weights, approximately `[0.269, 0.731]`.
 
-## Single-Head Self-Attention in PyTorch
+## Interview-Ready PyTorch Implementation
 
-For input $X$ of shape $(B,T,D)$, three learned linear layers produce $Q$, $K$, and $V$, each of shape $(B,T,D)$. The source uses the default `nn.Linear` biases. The attention operation then returns $(B,T,D)$; this single-head layer has no separate output projection.
+This compact implementation includes scaled dot-product attention, single-head self-attention, and multi-head self-attention. For input $X$ of shape $(B,T,D)$, each attention head works over the $T$ sequence positions. A Boolean mask uses `True` for allowed query-key pairs and broadcasts over batches and heads.
 
 ```python
 import math
@@ -104,66 +104,99 @@ import torch
 import torch.nn as nn
 
 
-class SingleHeadAttention(nn.Module):
-    def __init__(self, d):
-        super().__init__()
-        self.Wk = nn.Linear(d, d)
-        self.Wq = nn.Linear(d, d)
-        self.Wv = nn.Linear(d, d)
+def SDPA(Q, K, V, mask=None):
+    """Scaled dot-product attention.
 
-    def forward(self, X, mask=None):
-        K = self.Wk(X)
-        Q = self.Wq(X)
-        V = self.Wv(X)
-        d = K.shape[-1]
-        scores = Q @ K.transpose(-2, -1) / math.sqrt(d)
-        if mask is not None:
-            scores = scores.masked_fill(~mask, -torch.inf)
+    Q: (..., Tq, d_k)
+    K: (..., Tk, d_k)
+    V: (..., Tk, d_v)
+    mask: Boolean; True means allowed, False means masked.
+
+    Returns:
+        out:  (..., Tq, d_v)
+        attn: (..., Tq, Tk)
+    """
+    d = Q.shape[-1]
+    scores = Q @ K.transpose(-1, -2) / math.sqrt(d)
+
+    if mask is not None:
+        mask = torch.broadcast_to(mask, scores.shape)
+        scores = scores.masked_fill(~mask, -torch.inf)
+
+        # Make fully masked rows finite before softmax, then zero their weights.
+        all_masked = ~mask.any(dim=-1, keepdim=True)
+        scores = scores.masked_fill(all_masked, 0.0)
+        attn = torch.softmax(scores, dim=-1).masked_fill(~mask, 0.0)
+    else:
         attn = torch.softmax(scores, dim=-1)
-        return attn @ V
-```
 
-`transpose(-2, -1)` swaps the key's sequence and feature axes without moving the batch axis. `~mask` selects disallowed positions; a `(T, T)` Boolean mask broadcasts across the batch. PyTorch's softmax handles the numerical stabilization internally, but a fully masked row still produces `NaN`.
+    out = attn @ V
+    return out, attn
 
-## Multi-Head Self-Attention in PyTorch
 
-Multi-head attention splits the projected features into $H$ heads of width $d_h=D/H$. Each head computes its own attention weights. The outputs are concatenated and projected back to $D$ features.
-
-```python
-class MultiHeadAttention(nn.Module):
-    def __init__(self, num_heads, d_model):
+class SingleHeadAttn(nn.Module):
+    def __init__(self, d_model):
         super().__init__()
-        assert d_model % num_heads == 0
-        self.num_heads = num_heads
-        self.d_model = d_model
-        self.d_head = d_model // num_heads
-        self.Wk = nn.Linear(d_model, d_model)
         self.Wq = nn.Linear(d_model, d_model)
+        self.Wk = nn.Linear(d_model, d_model)
         self.Wv = nn.Linear(d_model, d_model)
         self.Wo = nn.Linear(d_model, d_model)
 
     def forward(self, X, mask=None):
-        B, T, D = X.shape
-        K = self.Wk(X)
+        # X: (B, T, d_model)
         Q = self.Wq(X)
+        K = self.Wk(X)
         V = self.Wv(X)
-        K = K.reshape(B, T, self.num_heads, self.d_head).transpose(1, 2)
-        Q = Q.reshape(B, T, self.num_heads, self.d_head).transpose(1, 2)
-        V = V.reshape(B, T, self.num_heads, self.d_head).transpose(1, 2)
-        scores = Q @ K.transpose(-2, -1) / math.sqrt(self.d_head)
-        if mask is not None:
-            if mask.ndim == 3:
-                mask = mask[:, None, :, :]
-            scores = scores.masked_fill(~mask, -torch.inf)
-        attn = torch.softmax(scores, dim=-1)
-        out = attn @ V
-        out = out.transpose(1, 2).reshape(B, T, self.num_heads * self.d_head)
-        return self.Wo(out)
+        O, _ = SDPA(Q, K, V, mask)
+        return self.Wo(O)
+
+
+class MultiHeadAttn(nn.Module):
+    def __init__(self, d_model, num_heads):
+        super().__init__()
+        assert num_heads > 0
+        assert d_model % num_heads == 0
+
+        self.num_heads = num_heads
+        self.d_head = d_model // num_heads
+        self.Wq = nn.Linear(d_model, d_model)
+        self.Wk = nn.Linear(d_model, d_model)
+        self.Wv = nn.Linear(d_model, d_model)
+        self.Wo = nn.Linear(d_model, d_model)
+
+    def forward(self, X, mask=None):
+        # X: (B, T, d_model)
+        B, T, D = X.shape
+        H, d = self.num_heads, self.d_head
+
+        Q = self.Wq(X).reshape(B, T, H, d).transpose(1, 2)
+        K = self.Wk(X).reshape(B, T, H, d).transpose(1, 2)
+        V = self.Wv(X).reshape(B, T, H, d).transpose(1, 2)
+        # Q, K, V: (B, H, T, d)
+
+        if mask is not None and mask.ndim == 3:
+            mask = mask[:, None, :, :]  # (B, T, T) -> (B, 1, T, T)
+
+        O, _ = SDPA(Q, K, V, mask)  # O: (B, H, T, d)
+        O = O.transpose(1, 2).reshape(B, T, D)  # concatenate heads
+        return self.Wo(O)
+
+
+# Shape check with a causal mask: each position attends to itself and earlier positions.
+B, T, D, H = 2, 10, 128, 8
+X = torch.randn(B, T, D)
+mask = torch.ones(T, T, dtype=torch.bool, device=X.device).tril()
+
+single = SingleHeadAttn(d_model=D)
+assert single(X, mask).shape == (B, T, D)
+
+multi = MultiHeadAttn(d_model=D, num_heads=H)
+assert multi(X, mask).shape == (B, T, D)
 ```
 
-The reshape and transpose turn each projection from `(B, T, D)` into `(B, H, T, d_head)`. Scores and weights then have shape `(B, H, T, T)`. After attention, transposing back and reshaping concatenates the heads to `(B, T, D)` before `Wo`.
+The score tensor has shape `(B, H, T, T)`: for each query position, it stores one score per key position and head. Reshaping and transposing split `(B, T, D)` into `(B, H, T, d_head)`. The final transpose and reshape concatenate the heads back to `(B, T, D)`. A `(T, T)` mask broadcasts across batch and heads; a `(B, T, T)` mask gains a singleton head dimension.
 
-A shared mask can have shape `(T, T)`. A per-example mask `(B, T, T)` gains a singleton head axis as `(B, 1, T, T)`, so it broadcasts to every head. The source also accepts compatible four-dimensional masks. Masks must be Boolean, on the same device as the scores, and allow at least one key per query and head.
+
 
 ## Interview Follow-ups
 
@@ -172,5 +205,5 @@ A shared mask can have shape `(T, T)`. A per-example mask `(B, T, T)` gains a si
 3. **Why separate the head dimension before attention?** Each head needs its own $T\times T$ score matrix and softmax distribution. A single dot product over all $D$ features would produce only one distribution.
 4. **What does `Wo` do?** It learns how to mix the concatenated head outputs and returns a $D$-dimensional representation.
 5. **What are the time and space costs?** For batch size $B$, sequence length $T$, model width $D$, and $H$ heads, projections cost $O(BTD^2)$ and attention costs $O(BT^2D)$ time. Materializing attention weights costs $O(BHT^2)$ space, alongside $O(BTD)$ activations and $O(D^2)$ parameters; training may retain additional intermediates.
-6. **Causal mask versus padding mask?** A causal mask hides future keys. A padding mask hides padding keys so real tokens do not attend to them. They can be combined, provided no query is left fully masked.
+6. **Causal mask versus padding mask?** A causal mask hides future keys. A padding mask hides padding keys so real tokens do not attend to them. They can be combined; this `SDPA` implementation assigns zero attention weights to a fully masked row.
 7. **Can one head of width $D$ replace multiple heads without changing the structure?** No. One head has one attention distribution per query; multiple heads can attend to different positions independently before their outputs are mixed.

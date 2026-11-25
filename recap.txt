@@ -1,0 +1,64 @@
+import numpy as np
+
+
+'''
+input -> layer 1 -> relu -> layer 2 -> softmax -> cross entropy loss
+'''
+class TwoLayerMLP:
+    def __init__(self, input_dim, hidden_dim, output_dim, lr):
+        self.W1 = np.random.randn(input_dim, hidden_dim) * 0.01
+        self.b1 = np.zeros((1, hidden_dim))
+        self.W2 = np.random.randn(hidden_dim, output_dim) * 0.01
+        self.b2 = np.zeros((1, output_dim))
+        self.lr = lr
+
+    def relu(self, x):
+        return np.maximum(0, x)
+
+    def softmax(self, logits):
+        shifted = logits - np.max(logits, axis=-1, keepdim=True)
+        exp_x = np.exp(shifted)
+        return exp_x / np.sum(exp_x, axis=-1, keepdim=True)
+
+    def ce_loss(self, probabilities, y):
+        B = y.shape[0]
+        true_p = probabilities[np.arange(B), y]
+        return -np.mean(np.log(true_p), axis=-1, keepdim=True)
+
+    def forward(self, x, y): # (B, input_dim) (B, )
+        self.x = x 
+        self.y = y
+
+        self.z1 = x @ self.W1 + self.b1
+        self.a1 = self.relu(self.z1)
+        self.z2 = self.a1 @ self.W2 + self.b2
+
+        probabilities = self.softmax(self.z2)
+        loss = self.ce_loss(probabilities, y)
+        self.probabilities = probabilities
+
+        return self.z2, loss
+
+    def backward(self):
+        B = self.y.shape[0]
+        one_hot = np.zeros_like(self.probabilities)
+        one_hot[np.arange(B), self.y] = 1
+        dz2 = 1 / B * (self.probabilities - one_hot)
+
+        dw2 = self.a1.T @ dz2
+        db2 = np.sum(dz2, axis=0)
+
+        da1 = dz2 @ self.W2.T 
+        dz1 = da1 * (self.z1 > 0)
+
+        dw1 = self.x.T @ dz1 
+        db1 = np.sum(dz1, axis=0)
+
+        self.W1 -= self.lr * dw1
+        self.b1 -= self.lr * db1
+        self.W2 -= self.lr * dw2
+        self.b2 -= self.lr * db2
+
+        return self.W1, self.b1, self.W2, self.b2
+
+

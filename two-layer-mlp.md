@@ -23,9 +23,11 @@ Each row is one example, and each target is one class ID.
 
 ---
 
-## Version 1 — Basic Two-Layer MLP
+## MLP-CE — Two-Layer Classification
 
-### Forward pass and loss
+### Version 1 — Basic Classifier
+
+#### Forward pass and loss
 
 The network applies an affine layer, ReLU, and a second affine layer:
 
@@ -51,7 +53,7 @@ $$
 L=-\frac{1}{B}\sum_{i=1}^{B}\log(p_{i,y_i})
 $$
 
-### Backpropagation
+#### Backpropagation
 
 Let $Q$ be the one-hot target matrix. For mean softmax cross-entropy, the gradient with respect to the logits simplifies to:
 
@@ -92,7 +94,7 @@ W_2\leftarrow W_2-\eta dW_2,\quad
 b_2\leftarrow b_2-\eta db_2
 $$
 
-### NumPy implementation
+#### NumPy implementation
 
 ```python
 import numpy as np
@@ -162,9 +164,9 @@ The source's `mlp_forward` returns `(loss, cache)`. Its `mlp_backward` returns `
 
 ---
 
-## Version 2 — Numerical Stability
+### Version 2 — Numerical Stability
 
-### Stable softmax
+#### Stable softmax
 
 Direct exponentiation can overflow for large logits. Subtracting the maximum logit $m_i=\max_c z_{ic}$ from every class score in a row leaves softmax unchanged:
 
@@ -174,7 +176,7 @@ $$
 
 All exponent arguments are non-positive, so this avoids overflow. The current `softmax` already uses this method.
 
-### Stable cross-entropy from logits
+#### Stable cross-entropy from logits
 
 The current `ce_loss` computes the loss from probabilities. If a very unlikely target probability underflows to zero, `-log(0)` becomes infinity. For example, logits `[1000, -1000]` with target class `1` have a finite mathematical loss of $2000$, while the probability-based calculation can return infinity.
 
@@ -202,6 +204,90 @@ loss = ce_loss_with_logits(y, z2)
 ```
 
 The backward gradient remains $dZ_2=(P-Q)/B$. The source example uses $B=2$, $D=2$, $H=3$, and $C=2$, so the logits have shape $(2,2)$ and the gradients have shapes $(2,3)$, $(3,)$, $(3,2)$, and $(2,)$ in the returned order.
+
+### Class-Based NumPy Implementation
+
+This version wraps the classifier in `TwoLayerNN`, like the regression example below. `forward` returns class probabilities. Call `loss(y)` and `backward(y)` after `forward`; the loss uses cached logits, and `backward` updates the parameters in place. Targets are integer class IDs with shape `(B,)`.
+
+```python
+import numpy as np
+
+
+class TwoLayerNN:
+    def __init__(self, input_dim, hidden_dim, num_classes, lr=0.01):
+        self.lr = lr
+        self.W1 = np.random.randn(input_dim, hidden_dim) * 0.01
+        self.b1 = np.zeros((1, hidden_dim))
+        self.W2 = np.random.randn(hidden_dim, num_classes) * 0.01
+        self.b2 = np.zeros((1, num_classes))
+
+    def relu(self, x):
+        return np.maximum(0, x)
+
+    def softmax(self, logits):
+        shifted = logits - np.max(logits, axis=1, keepdims=True)
+        exp_logits = np.exp(shifted)
+        return exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
+
+    def forward(self, X):
+        self.X = X
+        self.z1 = X @ self.W1 + self.b1
+        self.a1 = self.relu(self.z1)
+        self.logits = self.a1 @ self.W2 + self.b2
+        self.probs = self.softmax(self.logits)
+        return self.probs
+
+    def loss(self, y):
+        B = y.shape[0]
+        shifted = self.logits - np.max(self.logits, axis=1, keepdims=True)
+        log_sum_exp = np.log(np.sum(np.exp(shifted), axis=1))
+        target_logits = shifted[np.arange(B), y]
+        return np.mean(log_sum_exp - target_logits)
+
+    def backward(self, y):
+        B = self.X.shape[0]
+
+        # Subtract 1 from each example's target-class probability.
+        dz2 = self.probs.copy()
+        dz2[np.arange(B), y] -= 1
+        dz2 /= B
+
+        dW2 = self.a1.T @ dz2
+        db2 = np.sum(dz2, axis=0, keepdims=True)
+
+        da1 = dz2 @ self.W2.T
+        dz1 = da1 * (self.z1 > 0)
+
+        dW1 = self.X.T @ dz1
+        db1 = np.sum(dz1, axis=0, keepdims=True)
+
+        self.W2 -= self.lr * dW2
+        self.b2 -= self.lr * db2
+        self.W1 -= self.lr * dW1
+        self.b1 -= self.lr * db1
+```
+
+The indexed update `dz2[np.arange(B), y] -= 1` applies the one-hot target subtraction to one class entry in each row, producing the familiar gradient $dZ_2=(P-Q)/B$. The loss is computed from logits with log-sum-exp, so a very unlikely target does not require taking `log(0)`.
+
+### Training Example
+
+```python
+np.random.seed(0)
+X = np.array([[1., 2.],
+              [3., 4.]])
+y = np.array([0, 1])  # integer class IDs, shape (B,)
+
+model = TwoLayerNN(input_dim=2, hidden_dim=3, num_classes=2, lr=0.1)
+
+for _ in range(1000):
+    model.forward(X)
+    model.backward(y)
+
+model.forward(X)
+print(model.loss(y))
+```
+
+The classifier and regressor examples each define a standalone class named `TwoLayerNN`; use the version that matches the target type and loss in a given script.
 
 ---
 

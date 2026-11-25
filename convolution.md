@@ -94,3 +94,91 @@ Strict mathematical convolution flips the kernel first. This code follows the cr
 There is no softmax-style shift that stabilizes arbitrary convolution inputs. These functions multiply and sum directly; use floating-point inputs because integer multiplication can overflow before the result is stored. Very large floating-point products or sums can still overflow.
 
 The direct implementation costs $O(L_{out}K)$ for 1D and $O(H_{out}W_{out}K_HK_W)$ for 2D.
+
+## Follow-Up — Batched, Multi-Channel Convolution
+
+The basic functions above take one single-channel input. These interview follow-ups extend them to a batch of inputs, multiple input channels, and multiple output filters. They still compute cross-correlation, with one shared stride and symmetric zero padding.
+
+For Conv1D, `X` has shape $(B,C_{in},L)$ and `W` has shape $(C_{out},C_{in},K)$. The output shape is $(B,C_{out},L_{out})$, where
+
+$$
+L_{out}=\left\lfloor\frac{L+2p-K}{s}\right\rfloor+1.
+$$
+
+Each output sums over input channels and kernel positions:
+
+$$
+Y_{b,o,t}=\sum_{c=0}^{C_{in}-1}\sum_{r=0}^{K-1}
+\widetilde{X}_{b,c,ts+r}W_{o,c,r}+b_o.
+$$
+
+For Conv2D, `X` has shape $(B,C_{in},H,W_{in})$ and `W` has shape $(C_{out},C_{in},K_h,K_w)$. The output shape is $(B,C_{out},H_{out},W_{out})$, with
+
+$$
+H_{out}=\left\lfloor\frac{H+2p-K_h}{s}\right\rfloor+1,
+\qquad
+W_{out}=\left\lfloor\frac{W_{in}+2p-K_w}{s}\right\rfloor+1.
+$$
+
+```python
+import numpy as np
+
+
+def conv1d(X, W, b=None, stride=1, padding=0):
+    # X: (B, C_in, L); W: (C_out, C_in, K)
+    B, C_in, L = X.shape
+    C_out, _, K = W.shape
+
+    X = np.pad(X, ((0, 0), (0, 0), (padding, padding)))
+    L_out = (L + 2 * padding - K) // stride + 1
+    out = np.zeros((B, C_out, L_out))
+
+    for i in range(L_out):
+        start = i * stride
+        window = X[:, :, start:start + K]  # (B, C_in, K)
+        out[:, :, i] = np.sum(
+            window[:, None, :, :] * W[None, :, :, :],
+            axis=(-2, -1),
+        )
+
+    if b is not None:
+        out += b[None, :, None]
+
+    return out
+
+
+def conv2d(X, W, b=None, stride=1, padding=0):
+    # X: (B, C_in, H, W_in); W: (C_out, C_in, K_h, K_w)
+    B, C_in, H, W_in = X.shape
+    C_out, _, K_h, K_w = W.shape
+
+    X = np.pad(X, (
+        (0, 0),
+        (0, 0),
+        (padding, padding),
+        (padding, padding),
+    ))
+
+    H_out = (H + 2 * padding - K_h) // stride + 1
+    W_out = (W_in + 2 * padding - K_w) // stride + 1
+    out = np.zeros((B, C_out, H_out, W_out))
+
+    for i in range(H_out):
+        for j in range(W_out):
+            h_start = i * stride
+            w_start = j * stride
+            window = X[
+                :, :, h_start:h_start + K_h, w_start:w_start + K_w
+            ]  # (B, C_in, K_h, K_w)
+            out[:, :, i, j] = np.sum(
+                window[:, None, :, :, :] * W[None, :, :, :, :],
+                axis=(-3, -2, -1),
+            )
+
+    if b is not None:
+        out += b[None, :, None, None]
+
+    return out
+```
+
+In each window, `window[:, None, ...]` inserts an output-filter axis. Broadcasting multiplies that window against every filter, and the sum reduces the input-channel and kernel axes. The optional bias broadcasts once per output channel across batch and spatial positions.
